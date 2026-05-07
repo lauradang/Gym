@@ -51,15 +51,15 @@ repos:
         exclude: '^\.github/'
         types: [file]
       - id: add-verified-flag
-        name: Add verified flag to resource server configs
+        name: Add verified flag to resources server configs
         language: python
         entry: python scripts/add_verified_flag.py
         additional_dependencies: [pyyaml]
         files: ^resources_servers/.*/configs/.*\.yaml$
         pass_filenames: true
       - id: update-readme-table
-        name: Update resource server list in README
+        name: Update environment list in README
         language: python
-        entry: python scripts/update_resource_servers.py
+        entry: python scripts/update_env_list.py
         additional_dependencies: [pyyaml]
-        files: ^README\.md$|^resources_servers/.*/configs/.*\.yaml$
+        files: ^README\.md$|^resources_servers/.*/configs/.*\.yaml$|^responses_api_agents/.*/configs/.*\.yaml$

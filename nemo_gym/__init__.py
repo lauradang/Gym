@@ -14,15 +14,28 @@
 # limitations under the License.
 import sys
 from os import environ
-from os.path import abspath, dirname, join
+from pathlib import Path
 
 
-ROOT_DIR = dirname(abspath(__file__))
-PARENT_DIR = abspath(join(ROOT_DIR, ".."))
-CACHE_DIR = join(PARENT_DIR, "cache")
-RESULTS_DIR = join(PARENT_DIR, "results")
+# /path/to/dir/Gym (PARENT_DIR)
+# |- cache (CACHE_DIR)
+# |- results (RESULTS_DIR)
+# |- nemo_gym (ROOT_DIR)
+# |- responses_api_models
+# |- responses_api_agents
+# ...
+ROOT_DIR = Path(__file__).absolute().parent
+PARENT_DIR = ROOT_DIR.parent
 
-sys.path.append(PARENT_DIR)
+# Editable install: PARENT_DIR is the repo root (has pyproject.toml)
+# Wheel install: PARENT_DIR is site-packages/ so use cwd instead
+_is_editable_install = (PARENT_DIR / "pyproject.toml").exists()
+WORKING_DIR = PARENT_DIR if _is_editable_install else Path.cwd()
+
+CACHE_DIR = WORKING_DIR / "cache"
+RESULTS_DIR = WORKING_DIR / "results"
+
+sys.path.append(str(PARENT_DIR))
 
 # TODO: Maybe eventually we want an override for OMP_NUM_THREADS ?
 
@@ -30,16 +43,13 @@ sys.path.append(PARENT_DIR)
 environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Huggingface related caching directory overrides to local folders.
-environ["HF_DATASETS_CACHE"] = join(CACHE_DIR, "huggingface")
-environ["TRANSFORMERS_CACHE"] = environ["HF_DATASETS_CACHE"]
+# Only override if not already set by the user.
+if "HF_DATASETS_CACHE" not in environ:
+    environ["HF_DATASETS_CACHE"] = str(CACHE_DIR / "huggingface")
+if "TRANSFORMERS_CACHE" not in environ:
+    environ["TRANSFORMERS_CACHE"] = environ["HF_DATASETS_CACHE"]
 # TODO When `TRANSFORMERS_CACHE` is no longer supported in transformers>=5.0.0, migrate to `HF_HOME`
 # environ["HF_HOME"] = join(CACHE_DIR, "huggingface")
-
-# UV caching directory overrides to local folders.
-environ["UV_CACHE_DIR"] = join(CACHE_DIR, "uv")
-
-# Turn off Gradio analytics
-environ["GRADIO_ANALYTICS_ENABLED"] = "False"
 
 from nemo_gym.package_info import (
     __contact_emails__,
