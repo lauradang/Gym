@@ -10,6 +10,13 @@ code_gen:
       num_processes: 8
       unit_test_timeout_secs: 10
       debug: false
+      # Don't punish rollouts that ran out of tokens mid-<think> (the deepseek-r1
+      # parser leaves raw think tags in output_text when </think> is missing,
+      # tripping _has_reasoning_format_violation). With Nano3-3B emitting 50k+
+      # chars of reasoning per code prompt, ~77% of rollouts truncate mid-think
+      # under a 16k budget — punishing them at -0.2 swamps the +1.0 signal from
+      # the ~1% that actually pass tests. 0.0 lets the rare positives drive GRPO.
+      reasoning_format_penalty: 0.0
 code_gen_simple_agent:
   responses_api_agents:
     simple_agent:
