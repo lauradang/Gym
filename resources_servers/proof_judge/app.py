@@ -80,8 +80,9 @@ def _get_judge_client_config() -> tuple[str, str, int, list[str]]:
 
     # Get master nodes for each server (Het 0 is the ray server, so servers start at het group 1)
     master_nodes = []
+    het_group_start = server_config.get("het_group_start", 1)
     for i in range(n_servers):
-        het_group = i + 1  # Het 0 is the ray server
+        het_group = het_group_start + i
         env_var = f"SLURM_MASTER_NODE_HET_GROUP_{het_group}"
         master_node = os.environ[env_var]
         master_nodes.append(master_node)
@@ -365,6 +366,8 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
             temperature=self.config.temperature,
             top_p=self.config.top_p,
         )
+        if not response.choices:
+            return ("", extract_generated_token_count(response))
         content = response.choices[0].message.content
         return (content.strip() if content else "", extract_generated_token_count(response))
 

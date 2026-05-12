@@ -10,7 +10,7 @@ proof_judge:
       beta: 0.0
       temperature: 1.0
       top_p: 1.0
-      max_tokens: 100000
+      max_tokens: 4096
       zero_reward_incorrect_groups: false # Give a reward of 0 if all the proofs in a group are incorrect
       expected_group_size: -1 # = Group size when zero_reward_incorrect_groups is true
       assert_think_end: false
@@ -28,6 +28,10 @@ proof_simple_agent:
         type: responses_api_models
         name: policy_model
       datasets:
+      - name: train
+        type: train
+        jsonl_fpath: /lustre/fsw/portfolios/llmservice/projects/llmservice_fm_text/megatron_rl/models/openprover/reprocess_aops/aops_rubrics_v2_olympiads_gym.jsonl
+        license: NVIDIA Internal Use Only, Do Not Distribute
       - name: example
         type: example
         jsonl_fpath: resources_servers/proof_judge/data/example.jsonl
