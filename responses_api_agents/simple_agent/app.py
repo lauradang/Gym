@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
-from typing import List
+from typing import List, Optional
 
 from fastapi import Request, Response
 from pydantic import ConfigDict, ValidationError
@@ -46,6 +46,7 @@ class SimpleAgentConfig(BaseResponsesAPIAgentConfig):
     resources_server: ResourcesServerRef
     model_server: ModelServerRef
     max_steps: int = None
+    max_output_tokens_per_step: Optional[int] = None
 
 
 class SimpleAgentRunRequest(BaseRunRequest):
@@ -83,6 +84,12 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         while True:
             step += 1
             new_body = body.model_copy(update={"input": body.input + new_outputs})
+            if self.config.max_output_tokens_per_step is not None:
+                cap = self.config.max_output_tokens_per_step
+                current = new_body.max_output_tokens
+                new_body = new_body.model_copy(
+                    update={"max_output_tokens": min(current, cap) if current else cap}
+                )
 
             model_response = await self.server_client.post(
                 server_name=self.config.model_server.name,
