@@ -238,10 +238,10 @@ class VLLMModel(SimpleResponsesAPIModel):
         if self.config.chat_template_kwargs:
             chat_template_kwargs = deepcopy(self.config.chat_template_kwargs)
 
-        metadata = body_dict.get("metadata", dict())
+        metadata = body_dict.get("metadata") or {}
 
         # Merge global config chat_template_kwargs with per-request overrides in metadata (e.g. per-sample reasoning on/off)
-        metadata_chat_template_kwargs_str = metadata.get("chat_template_kwargs", "{}")
+        metadata_chat_template_kwargs_str = metadata.get("chat_template_kwargs") or "{}"
         chat_template_kwargs.update(json.loads(metadata_chat_template_kwargs_str))
 
         if chat_template_kwargs:
@@ -252,7 +252,7 @@ class VLLMModel(SimpleResponsesAPIModel):
         if self.config.extra_body:
             extra_body = deepcopy(self.config.extra_body)
 
-        metadata_extra_body_str = metadata.get("extra_body", "{}")
+        metadata_extra_body_str = metadata.get("extra_body") or "{}"
         extra_body.update(json.loads(metadata_extra_body_str))
 
         if self.config.return_token_id_information:
@@ -443,6 +443,9 @@ class VLLMModel(SimpleResponsesAPIModel):
                     # generation_token_ids=choice_dict["token_ids"],
                     generation_token_ids=generation_token_ids,
                     generation_log_probs=generation_log_probs,
+                    policy_epoch=[[(0, 0)]],
+                    kv_cache_epoch=[[(0, 0)]],
+                    num_evictions=[0],
                 )
             )
 
@@ -597,6 +600,9 @@ class VLLMConverter(BaseModel):
                     prompt_token_ids=m["prompt_token_ids"],
                     generation_token_ids=m["generation_token_ids"],
                     generation_log_probs=m["generation_log_probs"],
+                    policy_epoch=m["policy_epoch"],
+                    kv_cache_epoch=m["kv_cache_epoch"],
+                    num_evictions=m["num_evictions"],
                 )
 
         state.flush_assistant()
@@ -673,7 +679,9 @@ class VLLMConverter(BaseModel):
             case "assistant":
                 # Handle reasoning
                 final_content = ""
-                if isinstance(m["content"], list):
+                if m["content"] is None:
+                    pass
+                elif isinstance(m["content"], list):
                     content_str = "".join([part.get("text", "") for part in m["content"]])
                     final_content += content_str
                 elif isinstance(m["content"], str):

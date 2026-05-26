@@ -15,7 +15,7 @@
 from abc import abstractmethod
 
 from fastapi import FastAPI
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from nemo_gym.config_types import AggregateMetrics, AggregateMetricsRequest
 from nemo_gym.openai_utils import (
@@ -35,6 +35,7 @@ class BaseResourcesServer(BaseServer):
 
 
 class BaseRunRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")
     responses_create_params: NeMoGymResponseCreateParamsNonStreaming
 
 

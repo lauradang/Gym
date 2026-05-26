@@ -39,6 +39,10 @@ from nemo_gym.openai_utils import (
 from nemo_gym.server_utils import get_response_json
 
 
+logging.basicConfig(
+    level="INFO",
+    format="%(levelname)s:%(name)s:%(filename)s:%(lineno)d: %(message)s",
+)
 LOG = logging.getLogger(__name__)
 
 LOG_JSONL_PATH = os.environ.get("PROOF_JUDGE_LOG_JSONL_PATH", None)
@@ -55,6 +59,7 @@ def _load_prompt_template(filename: str) -> str:
 
 
 VERIFIER_PROMPT_TEMPLATE = _load_prompt_template("verifier.yaml")
+VERIFIER_RUBRIC_PROMPT_TEMPLATE = _load_prompt_template("verifier_rubric.yaml")
 META_VERIFIER_PROMPT_TEMPLATE = _load_prompt_template("meta-verifier.yaml")
 
 
@@ -195,6 +200,7 @@ class ProofWithJudgeResourcesServerConfig(BaseResourcesServerConfig):
     zero_reward_incorrect_groups: bool = False
     expected_group_size: int = -1
     assert_think_end: bool = False
+    use_verifier_rubric: bool = False
 
     def model_post_init(self, __context: Any) -> None:
         if self.zero_reward_incorrect_groups and self.expected_group_size <= 0:
@@ -202,7 +208,8 @@ class ProofWithJudgeResourcesServerConfig(BaseResourcesServerConfig):
 
 
 class ProofWithJudgeVerifyRequest(BaseVerifyRequest):
-    problem: str = ""
+    problem: str
+    rubric: Optional[str] = None
 
 
 class IncorrectGroupCoordinator(BaseModel):
@@ -226,12 +233,15 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
     )
 
     async def verify(self, body: ProofWithJudgeVerifyRequest) -> BaseVerifyResponse:
-        problem = getattr(body, "problem", "") or (body.model_dump().get("problem") or "")
+        problem = body.problem
+        rubric = body.rubric
+        if self.config.use_verifier_rubric and rubric is None:
+            raise ValueError("rubric must be set when use_verifier_rubric is enabled")
         full_response = self._extract_assistant_text(body.response)
         if not full_response:
             reward, details = 0.0, {"r_format": 0.0, "reason": "empty_response", "judge_generated_tokens": 0}
         else:
-            reward, details = await self._judge_single(problem, full_response)
+            reward, details = await self._judge_single(problem, full_response, rubric)
         reward, details = await self._maybe_zero_incorrect_group_reward(
             problem=problem, reward=reward, details=details
         )
@@ -243,7 +253,14 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
                 reward=reward,
                 details=details,
             )
-        return BaseVerifyResponse(**body.model_dump(), reward=reward)
+        metrics_to_log = {
+            "cnt_0": reward == 0.0,
+            "cnt_0.5": reward == 0.5,
+            "cnt_1": reward == 1.0,
+            "r_format": details["r_format"],
+            "judge_failure": details["judge_failure"] if "judge_failure" in details else 0,
+        }
+        return BaseVerifyResponse(**body.model_dump(), reward=reward, **metrics_to_log)
 
     async def _append_log_jsonl(
         self,
@@ -413,10 +430,18 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
         *,
         problem: str,
         proof: str,
+        rubric: Optional[str],
         self_analysis: str,
         beta: float,
     ) -> tuple[tuple[str, int], Optional[tuple[str, int]]]:
-        verifier_prompt = VERIFIER_PROMPT_TEMPLATE.format(problem=problem, proof=proof)
+        if self.config.use_verifier_rubric:
+            if rubric is None:
+                raise ValueError("rubric must be set when use_verifier_rubric is enabled")
+            verifier_prompt = VERIFIER_RUBRIC_PROMPT_TEMPLATE.format(
+                problem=problem, proof=proof, rubric=rubric
+            )
+        else:
+            verifier_prompt = VERIFIER_PROMPT_TEMPLATE.format(problem=problem, proof=proof)
         if beta == 0:
             verifier_result = await self._call_judge(verifier_prompt)
             return verifier_result, None
@@ -428,7 +453,9 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
         )
         return verifier_result, meta_result
 
-    async def _judge_single(self, problem: str, full_response: str) -> tuple[float, dict[str, Any]]:
+    async def _judge_single(
+        self, problem: str, full_response: str, rubric: Optional[str]
+    ) -> tuple[float, dict[str, Any]]:
         alpha = self.config.alpha
         beta = self.config.beta
 
@@ -451,14 +478,19 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
         verifier_result, meta_result = await self._call_verifier_and_meta_verifier(
             problem=problem,
             proof=proof,
+            rubric=rubric,
             self_analysis=self_analysis,
             beta=beta,
         )
         verifier_response, verifier_generated_tokens = verifier_result
-        r_y = extract_boxed_score(verifier_response) or 0.0
+        r_y_score = extract_boxed_score(verifier_response)
+        r_y = r_y_score if r_y_score is not None else 0.0
+        verifier_judge_failure = int(r_y_score is None)
 
         if beta == 0:
             return alpha * r_y, {
+                "r_format": 1.0,
+                "judge_failure": verifier_judge_failure,
                 "r_y": r_y,
                 "s_prime": s_prime,
                 "judge_generated_tokens": verifier_generated_tokens,
@@ -468,9 +500,13 @@ class ProofWithJudgeResourcesServer(SimpleResourcesServer):
 
         assert meta_result is not None
         meta_response, meta_generated_tokens = meta_result
-        r_meta = extract_boxed_score(meta_response) or 0.0
+        r_meta_score = extract_boxed_score(meta_response)
+        r_meta = r_meta_score if r_meta_score is not None else 0.0
+        judge_failure = int(verifier_judge_failure or r_meta_score is None)
         r_z = (1.0 - abs(s_prime - r_y)) * r_meta
         return alpha * r_y + beta * r_z, {
+            "r_format": 1.0,
+            "judge_failure": judge_failure,
             "judge_generated_tokens": verifier_generated_tokens + meta_generated_tokens,
             "r_y": r_y,
             "r_meta": r_meta,

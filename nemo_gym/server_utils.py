@@ -15,6 +15,7 @@
 import asyncio
 import atexit
 import json
+import yaml
 import resource
 import sys
 from abc import abstractmethod
@@ -76,7 +77,7 @@ _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG: bool = False
 
 class GlobalAIOHTTPAsyncClientConfig(BaseModel):
     global_aiohttp_connector_limit: int = 100 * 1024
-    global_aiohttp_connector_limit_per_host: int = 1024
+    global_aiohttp_connector_limit_per_host: int = 100 * 1024
 
     global_aiohttp_client_request_debug: bool = False
 
@@ -90,11 +91,11 @@ def get_global_aiohttp_client(
     if _GLOBAL_AIOHTTP_CLIENT is not None:
         return _GLOBAL_AIOHTTP_CLIENT
 
-    global_config_dict = get_global_config_dict(
-        global_config_dict_parser_config=global_config_dict_parser_config,
-        global_config_dict_parser_cls=global_config_dict_parser_cls,
-    )
-    cfg = GlobalAIOHTTPAsyncClientConfig.model_validate(global_config_dict)
+    #global_config_dict = get_global_config_dict(
+    #    global_config_dict_parser_config=global_config_dict_parser_config,
+    #    global_config_dict_parser_cls=global_config_dict_parser_cls,
+    #)
+    cfg = GlobalAIOHTTPAsyncClientConfig()
 
     return set_global_aiohttp_client(cfg)
 
@@ -264,8 +265,12 @@ class ServerClient(BaseModel):
                 f"Could not connect to the head server at {head_server_url}. Perhaps you are not running a server or your head server is on a different port?"
             ) from e
 
-        global_config_dict_yaml = response.content.decode()
-        global_config_dict = OmegaConf.create(json.loads(global_config_dict_yaml))
+        response.raise_for_status()
+        try:
+            global_config_dict_yaml = response.content.decode()
+            global_config_dict = OmegaConf.create(yaml.safe_load(global_config_dict_yaml))
+        except Exception as e:
+            raise ValueError(f"Failed to parse global config dict yaml: {response.content}") from e
 
         return cls(head_server_config=head_server_config, global_config_dict=global_config_dict)
 

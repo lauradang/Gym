@@ -14,6 +14,7 @@ proof_judge:
       zero_reward_incorrect_groups: false # Give a reward of 0 if all the proofs in a group are incorrect
       expected_group_size: -1 # = Group size when zero_reward_incorrect_groups is true
       assert_think_end: false
+      use_verifier_rubric: false
       domain: math
       description: Theorem proving with verifier + meta-verifier judge (combined env)
       verified: false
@@ -21,6 +22,7 @@ proof_simple_agent:
   responses_api_agents:
     simple_agent:
       entrypoint: app.py
+      max_output_tokens_per_step: 24576
       resources_server:
         type: resources_servers
         name: proof_judge
