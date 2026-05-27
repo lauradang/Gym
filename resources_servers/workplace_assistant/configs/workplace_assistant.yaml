@@ -11,12 +11,8 @@ workplace_assistant_simple_agent:
     simple_agent:
       entrypoint: app.py
       max_steps: 6
-      # Cap per-turn model output so a single runaway decode can't hang the
-      # whole rollout. Without this, multi-turn produces the "127/128 done,
-      # 1 stuck forever" single-straggler pattern (see memory:
-      # rollout-single-straggler-hang). 4096 leaves ample budget for normal
-      # tool-call responses while bounding worst-case turn length.
-      max_output_tokens_per_step: 4096
+      max_output_tokens_per_step: 49152
+      max_total_seq_length: 49152
       resources_server:
         type: resources_servers
         name: workplace_assistant
