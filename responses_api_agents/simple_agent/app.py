@@ -85,21 +85,17 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         while True:
             step += 1
             new_body = body.model_copy(update={"input": body.input + new_outputs})
-            # Effective per-turn output budget = min(static cap, room left in context).
-            # Without the prompt-aware clamp the inference engine rejects requests with
-            # MaxSequenceLengthOverflowError when prompt_tokens + max_output_tokens
-            # exceeds max_sequence_length (see dynamic_engine.py:1171). For turn 2+ we
-            # have an exact prompt token count from the previous response's usage; for
-            # turn 1 we use a conservative reserve.
-            cap = self.config.max_output_tokens_per_step
+            # When max_total_seq_length is configured, drop max_output_tokens so the
+            # inference engine's own auto-clamp (dynamic_engine.py:1155-1158) sets
+            # num_tokens_to_generate = max_sequence_length - len(prompt_tokens) per
+            # request. This avoids MaxSequenceLengthOverflowError without the agent
+            # needing to estimate prompt length (which is unreliable on turn 1 — a
+            # 4096 guess overflows on envs whose first-turn prompts run ~5000+ tokens).
+            # Otherwise fall back to the static per-env cap.
             if self.config.max_total_seq_length is not None:
-                if usage is not None and usage.input_tokens is not None:
-                    prompt_tokens = usage.input_tokens
-                else:
-                    prompt_tokens = 4096
-                room = max(self.config.max_total_seq_length - prompt_tokens - 256, 1)
-                cap = min(cap, room) if cap is not None else room
-            if cap is not None:
+                new_body = new_body.model_copy(update={"max_output_tokens": None})
+            elif self.config.max_output_tokens_per_step is not None:
+                cap = self.config.max_output_tokens_per_step
                 current = new_body.max_output_tokens
                 new_body = new_body.model_copy(
                     update={"max_output_tokens": min(current, cap) if current else cap}
