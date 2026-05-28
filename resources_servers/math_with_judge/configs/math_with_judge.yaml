@@ -17,7 +17,6 @@ math_with_judge_simple_agent:
   responses_api_agents:
     simple_agent:
       entrypoint: app.py
-      max_output_tokens_per_step: 49152
       max_total_seq_length: 49152
       resources_server:
         type: resources_servers

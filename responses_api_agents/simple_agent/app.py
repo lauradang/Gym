@@ -85,21 +85,20 @@ class SimpleAgent(SimpleResponsesAPIAgent):
         while True:
             step += 1
             new_body = body.model_copy(update={"input": body.input + new_outputs})
-            # When max_total_seq_length is configured, drop max_output_tokens so the
-            # inference engine's own auto-clamp (dynamic_engine.py:1155-1158) sets
-            # num_tokens_to_generate = max_sequence_length - len(prompt_tokens) per
-            # request. This avoids MaxSequenceLengthOverflowError without the agent
-            # needing to estimate prompt length (which is unreliable on turn 1 — a
-            # 4096 guess overflows on envs whose first-turn prompts run ~5000+ tokens).
-            # Otherwise fall back to the static per-env cap.
-            if self.config.max_total_seq_length is not None:
-                new_body = new_body.model_copy(update={"max_output_tokens": None})
-            elif self.config.max_output_tokens_per_step is not None:
+            # Per-env static cap (max_output_tokens_per_step) takes priority — it
+            # exists for multi-turn coherence (force the model to make one decision,
+            # see the tool response, then continue). When unset, defer to the
+            # inference engine's auto-clamp at dynamic_engine.py:1155-1158, which
+            # sets num_tokens_to_generate = max_sequence_length - len(prompt_tokens).
+            # max_total_seq_length is the signal to opt into that behavior.
+            if self.config.max_output_tokens_per_step is not None:
                 cap = self.config.max_output_tokens_per_step
                 current = new_body.max_output_tokens
                 new_body = new_body.model_copy(
                     update={"max_output_tokens": min(current, cap) if current else cap}
                 )
+            elif self.config.max_total_seq_length is not None:
+                new_body = new_body.model_copy(update={"max_output_tokens": None})
 
             model_response = await self.server_client.post(
                 server_name=self.config.model_server.name,
