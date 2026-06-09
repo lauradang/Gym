@@ -1,0 +1,106 @@
+diff --git a/openhands/agenthub/nemo_gym_client.py b/openhands/agenthub/nemo_gym_client.py
+index 01cd1c92e..691169594 100644
+--- a/openhands/agenthub/nemo_gym_client.py
++++ b/openhands/agenthub/nemo_gym_client.py
+@@ -82,18 +82,31 @@ class NemoGymClient:
+         if tools:
+             params["tools"] = tools
+ 
++        # Training-only fields that should be sent to the inference server for the
++        # most-recent assistant turn only and stripped from all earlier ones.
+         fields_to_remove = [
+             "prompt_token_ids",
+             "generation_token_ids",
+             "generation_log_probs",
++            "policy_epoch",
++            "kv_cache_epoch",
++            "num_evictions",
+         ]
++        # Detect the last assistant turn by the token-id triplet (always co-present);
++        # the off-policy fields are appended to fields_to_remove so they get pruned in
++        # lock-step but are not required for detection.
++        detect_fields = (
++            "prompt_token_ids",
++            "generation_token_ids",
++            "generation_log_probs",
++        )
+         last_occurrence_idx_seen = False
+         for message in reversed(message_dicts):
+             if last_occurrence_idx_seen:
+                 for field in fields_to_remove:
+                     if field in message:
+                         del message[field]
+-            elif all(field in message for field in fields_to_remove):
++            elif all(field in message for field in detect_fields):
+                 last_occurrence_idx_seen = True
+ 
+         model_response = await self.ng_server_client.post(
+@@ -115,6 +128,12 @@ class NemoGymClient:
+                 "prompt_token_ids": response_message_dict["prompt_token_ids"],
+                 "generation_token_ids": response_message_dict["generation_token_ids"],
+                 "generation_log_probs": response_message_dict["generation_log_probs"],
++                # Off-policy / lag metadata from the Megatron inference server. Carried
++                # through history alongside the token IDs so NeMoGym's *ForTraining
++                # schema validates on every assistant turn (not just the final one).
++                "policy_epoch": response_message_dict.get("policy_epoch"),
++                "kv_cache_epoch": response_message_dict.get("kv_cache_epoch"),
++                "num_evictions": response_message_dict.get("num_evictions"),
+             }
+             response._provider_specific_fields = provider_specific_fields
+ 
+diff --git a/openhands/core/message.py b/openhands/core/message.py
+index 431f5162c..124fbeeab 100644
+--- a/openhands/core/message.py
++++ b/openhands/core/message.py
+@@ -70,6 +70,15 @@ class Message(BaseModel):
+     prompt_token_ids: list[int] | None = None
+     generation_token_ids: list[int] | None = None
+     generation_log_probs: list[float] | None = None
++    # off-policy / lag metadata from the Megatron inference server. NeMoGym's
++    # *ForTraining schema (TokenIDLogProbMixin) requires these on EVERY assistant
++    # turn, not just the final response, so they must ride along through the
++    # conversation history exactly like the token IDs above. Without them, the
++    # vllm_model -> responses-items conversion (postprocess_assistant_message_dict)
++    # raises a pydantic ValidationError on each historical tool-call turn.
++    policy_epoch: list | None = None
++    kv_cache_epoch: list | None = None
++    num_evictions: list | None = None
+ 
+     @property
+     def contains_image(self) -> bool:
+@@ -166,5 +175,11 @@ class Message(BaseModel):
+             message_dict['generation_token_ids'] = self.generation_token_ids
+         if self.generation_log_probs is not None:
+             message_dict['generation_log_probs'] = self.generation_log_probs
++        if self.policy_epoch is not None:
++            message_dict['policy_epoch'] = self.policy_epoch
++        if self.kv_cache_epoch is not None:
++            message_dict['kv_cache_epoch'] = self.kv_cache_epoch
++        if self.num_evictions is not None:
++            message_dict['num_evictions'] = self.num_evictions
+ 
+         return message_dict
+diff --git a/openhands/memory/conversation_memory.py b/openhands/memory/conversation_memory.py
+index b51810d37..e9aa3d07d 100644
+--- a/openhands/memory/conversation_memory.py
++++ b/openhands/memory/conversation_memory.py
+@@ -328,6 +328,9 @@ class ConversationMemory:
+                 generation_log_probs=provider_specific_fields.get(
+                     'generation_log_probs'
+                 ),
++                policy_epoch=provider_specific_fields.get('policy_epoch'),
++                kv_cache_epoch=provider_specific_fields.get('kv_cache_epoch'),
++                num_evictions=provider_specific_fields.get('num_evictions'),
+             )
+             return []
+         elif isinstance(action, AgentFinishAction):
+@@ -396,6 +399,9 @@ class ConversationMemory:
+                     generation_log_probs=provider_specific_fields.get(
+                         'generation_log_probs'
+                     ),
++                    policy_epoch=provider_specific_fields.get('policy_epoch'),
++                    kv_cache_epoch=provider_specific_fields.get('kv_cache_epoch'),
++                    num_evictions=provider_specific_fields.get('num_evictions'),
+                 )
+             ]
+         elif isinstance(action, CmdRunAction) and action.source == 'user':
