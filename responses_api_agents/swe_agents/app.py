@@ -1084,6 +1084,12 @@ AGENT_FRAMEWORK_COMMIT={self.config.agent_framework_commit} \\
     scheduling_strategy="SPREAD",
     runtime_env={
         "py_executable": sys.executable,
+        # Propagate PATH so Ray workers inherit `apptainer` (installed on the bind-mounted
+        # home and prepended to PATH by launch_nemogym_server.sh's apptainer_on_path).
+        # Without this the worker starts with a clean env -> `apptainer: command not found`
+        # -> the .sif sandbox never launches -> the agent produces no trainable output ->
+        # every rollout drops to an empty placeholder -> prepare_trajectories: 0 usable.
+        "env_vars": {"PATH": os.environ.get("PATH", "")},
     },
     num_cpus=0.1,
 )
@@ -1365,7 +1371,12 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
     def model_post_init(self, context: Any) -> None:
         run_session_id = f"{int(time.time() * 1000)}_{str(uuid.uuid4())[:8]}"
-        workspace_root = Path(__file__).parent
+        # Episode results/checkouts are heavy in inodes (a 128-episode wave checks out
+        # ~2.5M inodes of repos) — keep them on node-local /tmp, NOT Lustre, like the
+        # oh_episodes redirect. Set SWE_RESULTS_ROOT to move them back (e.g. to a
+        # Lustre path when a run needs trajectory archaeology).
+        workspace_root = Path(os.environ.get("SWE_RESULTS_ROOT", f"/dev/shm/swe_results_{os.environ.get('USER', 'nemogym')}"))
+        workspace_root.mkdir(parents=True, exist_ok=True)
         self._swe_bench_wrapper_server_config = SWEBenchWrapperServerConfig(
             run_session_id=run_session_id,
             base_results_dir=workspace_root / f"swebench_results_{run_session_id}",
@@ -1532,7 +1543,8 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
 
         # Fix localhost URLs not working sometimes
         container_commands = []
-        container_commands.append("echo '127.0.0.1 localhost' >/etc/hosts")
+        container_commands.append("(echo '127.0.0.1 localhost' >>/etc/hosts 2>/dev/null || true)")
+        container_commands.append("(git config --global --add safe.directory '*' 2>/dev/null || true)")
 
         # Build mount arguments
         mount_args = [
@@ -1655,9 +1667,18 @@ class SWEBenchWrapper(SimpleResponsesAPIAgent):
         if "SWE-rebench" in data_point["dataset_name"]:
             env_args = "--env _JAVA_OPTIONS=-Djava.net.preferIPv6Addresses=false "
 
+        # Apptainer's --writable-tmpfs writable layer is capped by `sessiondir max size`
+        # (64 MB default on HSG). SWE working trees are >100 MB, so `git reset --hard` in
+        # OpenHands initialize_runtime exhausts it -> ENOSPC -> init aborts before any model
+        # call -> empty trajectory -> reward 0 on EVERY rollout. Back the writable layer with
+        # a directory overlay on real disk (per-instance persistent_dir, rootless, no loop
+        # device) instead of the RAM tmpfs. Single builder for both agent + eval modes.
+        overlay_dir = params.persistent_dir / f"apptainer_overlay_{command.mode}"
+        overlay_dir.mkdir(parents=True, exist_ok=True)
+
         # Launch Apptainer container and execute the script file
         apptainer_cmd = (
-            f"apptainer exec --writable-tmpfs --cleanenv --pid --no-mount home,tmp,bind-paths "
+            f"apptainer exec --overlay {overlay_dir} --cleanenv --pid --no-mount home,tmp,bind-paths "
             f"{env_args}"
             f"{mount_str} "
             f" {params.container} bash {container_script_path}"
