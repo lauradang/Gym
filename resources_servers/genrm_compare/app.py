@@ -95,6 +95,13 @@ class GenRMCompareConfig(BaseResourcesServerConfig):
     # When > 1, verify() buffers by prompt and runs comparison when cohort is full; rewards are relative to cohort.
     # When <= 1, verify() returns default_score (no comparison).
     num_rollouts_per_prompt: int = 1
+    # Release a cohort that never fills: if a sub-request dies before reaching
+    # verify() (engine failure, agent drop), the surviving waiters otherwise
+    # block forever and the whole rollout wave never completes (v6 smoke
+    # stalls, 2026-07-17: engine drained to one orphaned request while 7
+    # cohort peers hung). On timeout the first waiter claims the partial
+    # cohort and scores it (default score if fewer than 2 responses).
+    cohort_timeout_s: float = 1800.0
 
     # Comparison strategy
     comparison_strategy: str = "circular"  # "all_pairs" or "circular"
@@ -226,32 +233,53 @@ class GenRMCompareResourcesServer(SimpleResourcesServer):
                 del _cohort_buffers[prompt_key]
 
         if cohort_ready:
-            # Run comparison WITHOUT holding the lock so other cohorts can proceed concurrently
-            first_params = cohort_buf[0][0].responses_create_params
-            conversation_history = _input_to_conversation_history(getattr(first_params, "input", []) or [])
-            response_objs = [
-                (b.response.model_dump() if hasattr(b.response, "model_dump") else b.response) for b, _ in cohort_buf
-            ]
-            principle_val = getattr(cohort_buf[0][0], "principle", None) or principle
-            try:
-                rewards, _metrics, _, _ = await self._run_compare(
-                    conversation_history, response_objs, principle=principle_val
-                )
-                for i, (_, f) in enumerate(cohort_buf):
-                    if not f.done():
-                        f.set_result(rewards[i])
-            except Exception as e:
-                logger.exception("[GenRM] Cohort compare failed: %s", e)
-                for _, f in cohort_buf:
-                    if not f.done():
-                        f.set_result(cfg.default_score)
+            await self._score_cohort(cohort_buf, principle)
 
-        reward = await future
+        try:
+            reward = await asyncio.wait_for(asyncio.shield(future), timeout=cfg.cohort_timeout_s)
+        except asyncio.TimeoutError:
+            # Cohort never filled (a peer sub-request died upstream). Claim
+            # whatever arrived and score it so no waiter hangs the wave.
+            async with _cohort_lock:
+                stale_buf = _cohort_buffers.pop(prompt_key, None)
+            if stale_buf:
+                logger.warning(
+                    "[GenRM] Cohort for prompt_key=%s timed out with %d/%d rollouts; scoring partial cohort.",
+                    prompt_key, len(stale_buf), cfg.num_rollouts_per_prompt,
+                )
+                await self._score_cohort(stale_buf, principle)
+            reward = await future
         return BaseVerifyResponse(
             responses_create_params=body.responses_create_params,
             response=body.response,
             reward=reward,
         )
+
+    async def _score_cohort(self, cohort_buf, principle) -> None:
+        """Compare a (possibly partial) cohort and resolve every waiter future.
+
+        Runs WITHOUT holding _cohort_lock so other cohorts proceed concurrently.
+        A cohort of fewer than 2 responses gets the default score.
+        """
+        cfg = self.config
+        first_params = cohort_buf[0][0].responses_create_params
+        conversation_history = _input_to_conversation_history(getattr(first_params, "input", []) or [])
+        response_objs = [
+            (b.response.model_dump() if hasattr(b.response, "model_dump") else b.response) for b, _ in cohort_buf
+        ]
+        principle_val = getattr(cohort_buf[0][0], "principle", None) or principle
+        try:
+            rewards, _metrics, _, _ = await self._run_compare(
+                conversation_history, response_objs, principle=principle_val
+            )
+            for i, (_, f) in enumerate(cohort_buf):
+                if not f.done():
+                    f.set_result(rewards[i])
+        except Exception as e:
+            logger.exception("[GenRM] Cohort compare failed: %s", e)
+            for _, f in cohort_buf:
+                if not f.done():
+                    f.set_result(cfg.default_score)
 
     def setup_webserver(self) -> FastAPI:
         app = super().setup_webserver()
