@@ -97,8 +97,15 @@ class SimpleAgent(SimpleResponsesAPIAgent):
                 new_body = new_body.model_copy(
                     update={"max_output_tokens": min(current, cap) if current else cap}
                 )
-            elif self.config.max_total_seq_length is not None:
-                new_body = new_body.model_copy(update={"max_output_tokens": None})
+            elif self.config.max_total_seq_length is not None and new_body.max_output_tokens is None:
+                # Only rows WITHOUT their own cap defer to the engine auto-clamp.
+                # This branch used to null unconditionally, which sent capped rows
+                # (e.g. rlhf max_output_tokens=16384) to the full ~131k generation
+                # room; a non-EOSing sample then decodes for ~an hour and the wave
+                # tail stalls (v6 smoke straggler: engine reqs asking 130,9xx
+                # tokens). The engine's block-aware generation-room clamp makes
+                # row caps safe near the boundary, so preserving them is correct.
+                pass
 
             model_response = await self.server_client.post(
                 server_name=self.config.model_server.name,
