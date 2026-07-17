@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import json
+import logging
+import os
 import re
 from copy import deepcopy
 from time import time
@@ -85,6 +87,13 @@ class VLLMModelConfig(BaseResponsesAPIModelConfig):
     # Corresponds to the extra_body of OpenAI Client.
     extra_body: Optional[Dict[str, Any]] = None
 
+    # Optional path to a file that publishes the CURRENT backend base_url (one
+    # line). Used for shared serving jobs that move nodes when their SLURM job
+    # rotates: _resolve_client re-reads this file (mtime-cached) and rebinds
+    # all clients when the published endpoint changes, so a long-lived gym
+    # survives its judge being resubmitted elsewhere.
+    endpoint_file: Optional[str] = None
+
     def model_post_init(self, context):
         if isinstance(self.base_url, str):
             self.base_url = [self.base_url]
@@ -117,6 +126,7 @@ class VLLMModel(SimpleResponsesAPIModel):
         ]
 
         self._session_id_to_client: Dict[str, NeMoGymAsyncOpenAI] = dict()
+        self._endpoint_file_mtime: Optional[float] = None
 
         self._converter = self.get_converter()
 
@@ -476,7 +486,33 @@ class VLLMModel(SimpleResponsesAPIModel):
             ],
         )
 
+    def _maybe_rebind_endpoint(self) -> None:
+        """Rebind clients if the published endpoint file changed. Never raises."""
+        if not self.config.endpoint_file:
+            return
+        try:
+            mtime = os.stat(self.config.endpoint_file).st_mtime
+            if mtime == self._endpoint_file_mtime:
+                return
+            self._endpoint_file_mtime = mtime
+            with open(self.config.endpoint_file) as f:
+                url = f.read().strip()
+            if not url or [url] == self.config.base_url:
+                return
+            logging.getLogger(__name__).warning(
+                f"vllm_model '{getattr(self.config, 'name', '?')}': backend endpoint changed "
+                f"{self.config.base_url} -> {[url]}; rebinding clients."
+            )
+            self.config.base_url = [url]
+            self._clients = [
+                NeMoGymAsyncOpenAI(base_url=url, api_key=self.config.api_key)
+            ]
+            self._session_id_to_client.clear()
+        except Exception:
+            logging.getLogger(__name__).warning("endpoint_file rebind check failed", exc_info=True)
+
     def _resolve_client(self, request: Request) -> NeMoGymAsyncOpenAI:
+        self._maybe_rebind_endpoint()
         session_id = request.session[SESSION_ID_KEY]
         if session_id not in self._session_id_to_client:
             # There is probably a better way to select the endpoint for this request. But this will do for now.
