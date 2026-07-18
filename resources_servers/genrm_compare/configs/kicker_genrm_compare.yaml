@@ -1,4 +1,7 @@
-# Kicker-blend genrm_compare: trimmed from genrm_compare.yaml.
+# Kicker-blend genrm_compare, knob-aligned to geshen's reference
+# (nemo-rl grpo_ultra_512n4g_bf16.yaml, 2026-07-18 diff): use_principle=true
+# with the reference default rubric, judge temp 1.0, 24576 judge tokens,
+# 0.5/0.5 shortest-response bonuses, 0.12/0.12 group length penalties.
 # - No genrm_model block: the judge instance comes from
 #   responses_api_models/genrm_model/configs/kicker_genrm_model.yaml
 #   (TP4, single GB200 het node) via NEMOGYM_EXTRA_CONFIG_PATHS; the bundled
@@ -19,18 +22,19 @@ genrm_compare_resources_server:
       num_rollouts_per_prompt: 16
       genrm_responses_create_params:
         input: []
-        max_output_tokens: 16384
-        temperature: 0.6
+        max_output_tokens: 24576
+        temperature: 1.0
         top_p: 0.95
       comparison_strategy: circular
       num_judges_per_comparison: 1
-      use_principle: false
+      use_principle: true
+      default_principle: "You will be given one or more evaluation criteria (rubrics).\nEvaluate both responses on EACH criterion individually first, then synthesize an overall judgment.\nCriteria:\n\n1. Please act as an impartial judge and evaluate the quality of the responses provided by two AI assistants to the user prompt. Begin your evaluation by generating your own answer to the prompt. You must provide your answer before judging any answers. When evaluating the assistants' answers, compare both assistants' answers with your answer. You must identify and correct any mistakes or inaccurate information. Then consider if the assistant's answers are helpful, relevant, and concise. Helpful means the answer correctly responds to the prompt or follows the instructions. Note when user prompt has any ambiguity or more than one interpretation, it is more helpful and appropriate to ask for clarifications or more information from the user than providing an answer based on assumptions. Relevant means all parts of the response closely connect or are appropriate to what is being asked. Concise means the response is clear and not verbose or excessive. Then consider the creativity and novelty of the assistant's answers when needed. Finally, identify any missing important information in the assistants' answers that would be beneficial to include when responding to the user prompt."
       aggregator_method: simple_tiebreaker
-      reasoning_bonus: 0.0
-      answer_bonus: 0.0
+      reasoning_bonus: 0.5
+      answer_bonus: 0.5
       top_percentile: 0.2
-      group_reasoning_length_penalty_coeff: 0.0
-      group_answer_length_penalty_coeff: 0.0
+      group_reasoning_length_penalty_coeff: 0.12
+      group_answer_length_penalty_coeff: 0.12
       default_score: 3.0
       default_ranking: 3.5
       debug_logging: false
