@@ -2,10 +2,6 @@
 set -e
 set -x  # Enable debug output
 
-# Resolve this script's own dir so we can locate sibling patch files regardless
-# of the cwd the caller invokes us from.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # Variables
 setup_dir=$SETUP_DIR
 miniforge_dir=$MINIFORGE_DIR
@@ -93,7 +89,10 @@ git checkout $agent_framework_commit
 # NeMoGym's *ForTraining schema validates on every assistant turn, not just the
 # final response. Idempotent: skip a patch that is already applied; hard-fail if a
 # patch neither applies cleanly nor is already present (prevents silent drift).
-patch_dir="$SCRIPT_DIR/patches"
+# (This loop was dropped in the upstream refactor and restored by the
+# swe-parity-port review 2026-07-22 — without it every multi-turn episode 500s
+# against the Megatron policy server with a pydantic ValidationError.)
+patch_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/patches"
 if [ -d "$patch_dir" ]; then
     for patch in "$patch_dir"/*.patch; do
         [ -e "$patch" ] || continue
