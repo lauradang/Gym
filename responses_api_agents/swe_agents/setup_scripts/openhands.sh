@@ -174,7 +174,70 @@ poetry install --no-interaction --no-root
 # Install datasets package
 echo "Installing datasets package..."
 
-poetry run python -m pip install datasets huggingface_hub packaging==26.0
+# wandb: evaluation/utils/shared.py imports it while recording results. If it is
+# missing every episode raises 'No module named wandb', exhausts its retries and
+# returns an EMPTY trajectory -- the agent does all its real work (edits, test
+# runs) and then the harness dies on the import, so 128 rollouts come back empty
+# and the job dies at prepare_trajectories (observed 2026-07-25 after a clean
+# rebuild; the previous long-lived setup happened to have it installed).
+# Resolve the venv interpreter explicitly and use it for every install below.
+# `poetry run python` is not reliable here (see the nemo_gym note further down).
+_NG_VENV_PY="$(pwd)/.venv/bin/python"
+if [ ! -x "$_NG_VENV_PY" ]; then
+    _NG_VENV_PY="$(poetry env info --path 2>/dev/null)/bin/python"
+fi
+if [ ! -x "$_NG_VENV_PY" ]; then
+    echo "FATAL: cannot locate the OpenHands venv interpreter" >&2; exit 1
+fi
+echo "OpenHands venv interpreter: $_NG_VENV_PY"
+
+# gprof2dot/pydot are declared nemo_gym deps (pyproject.toml) pulled in by
+# nemo_gym.profiling <- nemo_gym.server_utils. They are NOT optional: the agent's
+# very first import (NemoGymClient -> ServerClient) walks that chain, so without
+# them every episode dies before doing any work. They are installed explicitly
+# because the nemo_gym install below uses --no-deps (to avoid clobbering
+# OpenHands' own pins).
+"$_NG_VENV_PY" -m pip install datasets huggingface_hub packaging==26.0 wandb gprof2dot pydot
+
+# Install the CURRENT tree's nemo_gym into the OpenHands venv.
+#
+# The agent running inside the sandbox imports nemo_gym from THIS venv, not from
+# the Gym tree. Left to pip's own resolution the venv can end up with a stale
+# nemo_gym that predates the ServerClient self-heal (bounded connection retries +
+# re-resolving a server's address from the head server when a connect fails).
+# Without the heal, a policy-server port rebind makes every agent retry a dead
+# address 3x and return an EMPTY trajectory -- 128 empty rollouts then kill the
+# job at prepare_trajectories with no obvious cause (observed 2026-07-25).
+# This MUST be all-or-nothing. An earlier version ran `pip install -q ... || cp
+# *.py || echo WARNING`: pip did not target this venv, `-q` hid the error, and the
+# cp fallback landed only part of the package. That left a NEW global_config.py
+# against an OLD __init__.py, so every episode died on
+#   ImportError: cannot import name 'WORKING_DIR' from 'nemo_gym'
+# before doing any work -- strictly worse than the stale-but-coherent package it
+# replaced (observed 2026-07-25). Hence: the venv's own interpreter (not
+# `poetry run`, which resolved elsewhere), no -q, no fallback, and a hard
+# post-install import check that fails the setup rather than shipping a half
+# package.
+_NG_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+if [ -d "$_NG_SRC/nemo_gym" ] && [ -x "$_NG_VENV_PY" ]; then
+    echo "Syncing nemo_gym from tree ($_NG_SRC) into the OpenHands venv..."
+    "$_NG_VENV_PY" -m pip install --no-deps --force-reinstall --no-cache-dir "$_NG_SRC" || {
+        echo "FATAL: nemo_gym install into the OpenHands venv failed" >&2; exit 1; }
+    # Verify the EXACT chain the sandboxed agent walks on its first import
+    # (codeact_agent -> nemo_gym_client -> ServerClient -> profiling), not just a
+    # token module. An earlier check imported only global_config and therefore
+    # passed while nemo_gym.profiling was still missing gprof2dot -- the failure
+    # then surfaced 36 times per link at runtime instead of once at setup.
+    "$_NG_VENV_PY" - <<'PYCHK' || { echo "FATAL: nemo_gym in the OpenHands venv is inconsistent" >&2; exit 1; }
+import nemo_gym, nemo_gym.global_config, nemo_gym.server_utils, nemo_gym.profiling
+from nemo_gym import CACHE_DIR, PARENT_DIR, RESULTS_DIR, WORKING_DIR
+from nemo_gym.global_config import get_global_config_dict
+from nemo_gym.server_utils import ServerClient
+print("nemo_gym venv sync verified")
+PYCHK
+else
+    echo "FATAL: cannot sync nemo_gym (src=$_NG_SRC venv_py=$_NG_VENV_PY)" >&2; exit 1
+fi
 
 mkdir -p evaluation/oh
 mkdir -p logs

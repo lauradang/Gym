@@ -1,0 +1,57 @@
+# d1 (honest-dolphin) remote judge instances + reasoning-off policy alias.
+# Loaded via NEMOGYM_EXTRA_CONFIG_PATHS alongside kicker_genrm_remote.yaml.
+#
+# nl2bash_judge_model / safety_judge_model mirror geshen's in-job local_vllm
+# judges (launch_nano_honest_dolphin.sh) but point at our standalone serving
+# jobs (serve_judge_nl2bash.sh :8711, serve_judge_safety.sh :8712) via the
+# same endpoint-file pattern as the GenRM proxy: *_BASE_URL is exported by
+# launch_nemogym_server.sh at container start, endpoint_file makes the proxy
+# re-read the published endpoint (mtime-cached) and rebind when the serving
+# job rotates to a new node mid-link. served-model-name on both jobs is
+# "model", matching geshen's external-genrm convention.
+#
+# policy_model_reasoning_off is geshen's block verbatim
+# (Gym-workspace vllm_model_for_training.yaml:15): the policy backend with
+# thinking disabled, required by genrm_simple_agent_reasoning_off (5367
+# trusty_viper rows) — our kicker_genrm_compare.yaml deliberately dropped
+# that agent because this instance was missing.
+nl2bash_judge_model:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${oc.env:NL2BASH_JUDGE_BASE_URL,http://nl2bash-endpoint-file-will-rebind:8711/v1}
+      api_key: EMPTY
+      model: model
+      return_token_id_information: false
+      uses_reasoning_parser: false
+      uses_interleaved_reasoning: false
+      chat_template_kwargs: null
+      extra_body: null
+      endpoint_file: /lustre/fs1/portfolios/llmservice/projects/llmservice_fm_text/users/jalbericiola/mrl_internal/judge_nl2bash_endpoint.txt
+
+safety_judge_model:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${oc.env:SAFETY_JUDGE_BASE_URL,http://safety-endpoint-file-will-rebind:8712/v1}
+      api_key: EMPTY
+      model: model
+      return_token_id_information: false
+      uses_reasoning_parser: false
+      uses_interleaved_reasoning: false
+      chat_template_kwargs: null
+      extra_body: null
+      endpoint_file: /lustre/fs1/portfolios/llmservice/projects/llmservice_fm_text/users/jalbericiola/mrl_internal/judge_safety_endpoint.txt
+
+policy_model_reasoning_off:
+  responses_api_models:
+    vllm_model:
+      entrypoint: app.py
+      base_url: ${policy_base_url}
+      api_key: ${policy_api_key}
+      model: ${policy_model_name}
+      return_token_id_information: true
+      uses_reasoning_parser: true
+      chat_template_kwargs:
+        enable_thinking: false
+      sequential_reasoning_allowed: false

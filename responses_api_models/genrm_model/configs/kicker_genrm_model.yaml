@@ -1,0 +1,25 @@
+# GenRM judge instance for the kicker blend (abstention/omniscience/gdpval-rubric).
+# Instance name stays `genrm_model` so the resources servers' judge_model_server
+# references resolve with zero edits. Serves the pre-staged local weights (no HF
+# download at job start) on one GB200 node (4 GPUs, TP4). Launched by ng_run in
+# NEMOGYM_MODE=local_judge via NEMOGYM_EXTRA_CONFIG_PATHS.
+# Fallback if TP4 OOMs or is too slow: NEMOGYM_JUDGE_NODES=2 + tensor_parallel_size: 8
+# + VLLM_RAY_DP_PACK_STRATEGY: span (see local_vllm_model/configs/Qwen/*235B* pattern).
+genrm_model:
+  responses_api_models:
+    genrm_model:
+      entrypoint: app.py
+      model: /lustre/fsw/portfolios/llmservice/projects/llmservice_fm_text/megatron_rl/models/Qwen3-Nemotron-235B-A22B-GenRM-2603
+      return_token_id_information: false
+      uses_reasoning_parser: true
+      supports_principle_role: true
+      hf_home: /lustre/fsw/portfolios/llmservice/projects/llmservice_fm_text/megatron_rl/models
+      vllm_serve_env_vars:
+        VLLM_RAY_DP_PACK_STRATEGY: strict
+      vllm_serve_kwargs:
+        data_parallel_size: 1
+        tensor_parallel_size: 4
+        pipeline_parallel_size: 1
+        trust_remote_code: true
+        gpu_memory_utilization: 0.9
+      debug: false
