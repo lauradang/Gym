@@ -1171,15 +1171,42 @@ class OpenHandsHarnessProcessor(BaseDatasetHarnessProcessor):
                 # pinned commit (e.g. a setup dir inherited from an in-place
                 # server run): silently running the wrong scaffold is exactly
                 # the class of bug this port fixes. Re-run setup on mismatch.
+                venv_python = openhands_dir / ".venv" / "bin" / "python"
                 head = subprocess_run(
                     ["git", "-C", str(openhands_dir), "rev-parse", "HEAD"],
                     capture_output=True,
                     text=True,
                 )
-                if head.returncode == 0 and head.stdout.strip() != self.config.agent_framework_commit:
+                venv_probe = subprocess_run(
+                    [
+                        str(venv_python),
+                        "-c",
+                        (
+                            "from importlib.metadata import version; "
+                            "from packaging.version import Version; "
+                            "assert Version(version('jinja2')) >= Version('3.1.3'); "
+                            "assert Version(version('pyjwt')) >= Version('2.9'); "
+                            "assert Version(version('sqlalchemy')) >= Version('2.0.40'); "
+                            "assert Version(version('flask')) >= Version('2.2'); "
+                            "import datasets, jinja2, markupsafe, wandb; "
+                            "import nemo_gym.hf_utils, nemo_gym.profiling, nemo_gym.server_utils"
+                        ),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, "PYTHONNOUSERSITE": "1"},
+                )
+                if head.returncode != 0 or head.stdout.strip() != self.config.agent_framework_commit:
                     print(
                         f"OpenHands checkout at {head.stdout.strip()[:12]} != pinned "
                         f"{self.config.agent_framework_commit[:12]}; re-running setup",
+                        flush=True,
+                    )
+                elif venv_probe.returncode != 0:
+                    probe_error = venv_probe.stderr.strip().splitlines()[-1:]
+                    print(
+                        f"OpenHands venv failed its runtime import/version probe "
+                        f"({probe_error}); re-running setup",
                         flush=True,
                     )
                 else:

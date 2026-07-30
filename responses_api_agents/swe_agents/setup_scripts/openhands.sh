@@ -228,12 +228,26 @@ if [ -d "$_NG_SRC/nemo_gym" ] && [ -x "$_NG_VENV_PY" ]; then
     # token module. An earlier check imported only global_config and therefore
     # passed while nemo_gym.profiling was still missing gprof2dot -- the failure
     # then surfaced 36 times per link at runtime instead of once at setup.
-    "$_NG_VENV_PY" - <<'PYCHK' || { echo "FATAL: nemo_gym in the OpenHands venv is inconsistent" >&2; exit 1; }
+    "$_NG_VENV_PY" - <<'PYCHK' || { echo "FATAL: OpenHands venv is inconsistent" >&2; exit 1; }
+from importlib.metadata import version
+
+from packaging.version import Version
+
+assert Version(version("jinja2")) >= Version("3.1.3")
+assert Version(version("pyjwt")) >= Version("2.9")
+assert Version(version("sqlalchemy")) >= Version("2.0.40")
+assert Version(version("flask")) >= Version("2.2")
+
+import datasets
+import jinja2
+import markupsafe
 import nemo_gym, nemo_gym.global_config, nemo_gym.server_utils, nemo_gym.profiling
+import nemo_gym.hf_utils
+import wandb
 from nemo_gym import CACHE_DIR, PARENT_DIR, RESULTS_DIR, WORKING_DIR
 from nemo_gym.global_config import get_global_config_dict
 from nemo_gym.server_utils import ServerClient
-print("nemo_gym venv sync verified")
+print("OpenHands venv runtime imports and versions verified")
 PYCHK
 else
     echo "FATAL: cannot sync nemo_gym (src=$_NG_SRC venv_py=$_NG_VENV_PY)" >&2; exit 1
