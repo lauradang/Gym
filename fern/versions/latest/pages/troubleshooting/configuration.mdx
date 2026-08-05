@@ -171,3 +171,38 @@ gym env start \
 Bypassing validation means invalid servers won't start. Use this only for debugging, not production.
 
 </Warning>
+
+---
+
+## Connection Errors
+
+Errors where the config is valid but an endpoint it names cannot be reached.
+
+### Model Endpoint Unreachable
+
+```
+Gave up waiting for 1 model endpoint(s) after 600s:
+  - http://localhost:8000/v1
+
+Nothing accepted a connection there. The server was never started, is still starting up, or the URL
+in your config does not match where it is listening.
+```
+
+**When**: `gym env start` finished starting Gym's own servers, but nothing is listening at a model endpoint named in the config. Causes include a URL that does not match where the server is listening, an inference server that was never started or has not finished starting, and a network path that is blocked.
+
+Gym's model server is a proxy. It answers as soon as it starts, whether or not an inference server is behind it, which is why this check is separate from the server readiness check above it.
+
+**Fix**: Check that something answers at the URL, using whatever route the endpoint serves:
+
+```bash
+curl -i <policy_base_url>/models
+```
+
+Any response, including `401` or `404`, means something is listening. Then correct `policy_base_url` in `env.yaml`, or start the server it names. The [Quickstart](/get-started/quickstart) uses a hosted endpoint (`https://api.openai.com/v1`); a `localhost` URL means you serve the model yourself (see [Configure Model](/model-server)).
+
+<Note>
+The check waits up to `model_endpoint_readiness_timeout_seconds` (default 600) so an inference server still loading weights is not treated as a failure. Raise it to wait longer, or set it to `0` to skip the check entirely.
+
+Any HTTP answer counts as listening, including 401 and 404 — this checks that something is there, not that it is healthy.
+
+</Note>

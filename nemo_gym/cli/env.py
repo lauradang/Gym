@@ -28,6 +28,7 @@ from threading import Thread
 from time import sleep, time
 from typing import Dict, List, Optional, Tuple
 
+import requests
 import rich
 import uvicorn
 from devtools import pprint
@@ -51,6 +52,7 @@ from nemo_gym.global_config import (
     COMPONENT_NAME_KEY_NAME,
     DRY_RUN_KEY_NAME,
     JSON_OUTPUT_KEY_NAME,
+    MODEL_ENDPOINT_READINESS_TIMEOUT_KEY_NAME,
     NEMO_GYM_CONFIG_DICT_ENV_VAR_NAME,
     NEMO_GYM_CONFIG_PATH_ENV_VAR_NAME,
     NEMO_GYM_RESERVED_TOP_LEVEL_KEYS,
@@ -75,6 +77,116 @@ from nemo_gym.server_utils import (
 _GRACEFUL_SHUTDOWN_TIMEOUT_SEC: int = 1
 # Grace period after SIGKILL for the kernel to reap the child and avoid <defunct> entries.
 _FORCE_KILL_REAP_TIMEOUT_SEC: int = 2
+
+
+# Model servers name their upstream endpoint inconsistently: `openai_base_url` (openai_model,
+# azure_openai_model), `base_url` (inference_provider, vllm_model), `anthropic_base_url`. Matching
+# on the shape of the key rather than a fixed list also covers configs that carry a provider URL
+# literally instead of interpolating `policy_base_url`, which most inference_provider variants do.
+_MODEL_SERVER_TYPE = "responses_api_models"
+_BASE_URL_KEY_SUFFIX = "base_url"
+_ENDPOINT_PROBE_TIMEOUT_SEC: float = 5.0
+_ENDPOINT_POLL_INTERVAL_SEC: float = 3.0
+
+
+def _collect_model_endpoint_urls(global_config_dict: DictConfig) -> List[str]:
+    """The distinct upstream model endpoints named in the resolved config, in the order found.
+
+    `wait_for_spinup` only polls Gym's own servers, and the Gym-side model server is a proxy that
+    answers immediately whether or not anything is behind it, so these are the URLs nothing checks.
+    """
+    urls: List[str] = []
+    for top_level_path, top_level_value in global_config_dict.items():
+        if top_level_path in NEMO_GYM_RESERVED_TOP_LEVEL_KEYS or not isinstance(top_level_value, DictConfig):
+            continue
+
+        model_servers = top_level_value.get(_MODEL_SERVER_TYPE)
+        if not isinstance(model_servers, DictConfig):
+            continue
+
+        for server_config_dict in model_servers.values():
+            if not isinstance(server_config_dict, DictConfig):
+                continue
+
+            for key, value in server_config_dict.items():
+                if not str(key).endswith(_BASE_URL_KEY_SUFFIX) or not isinstance(value, str) or not value:
+                    continue
+                if value not in urls:
+                    urls.append(value)
+
+    return urls
+
+
+def _endpoint_probe_url(base_url: str) -> str:
+    """What to GET to find out whether `base_url` is being served.
+
+    `GET /v1/models` is part of the OpenAI API, so most endpoints behind a `/v1` base URL answer it,
+    but nothing here depends on that: `_is_endpoint_listening` treats any HTTP response as listening,
+    so an endpoint that does not implement it answers 404 and still counts. URLs that do not end in
+    `/v1` are probed at their root for the same reason.
+    """
+    trimmed = base_url.rstrip("/")
+    return f"{trimmed}/models" if trimmed.endswith("/v1") else trimmed
+
+
+def _is_endpoint_listening(base_url: str, timeout_seconds: float = _ENDPOINT_PROBE_TIMEOUT_SEC) -> bool:
+    """Whether anything answers at `base_url`. Listening is the bar, not healthy.
+
+    A 401 or 404 means something is there, which is all this checks; requiring a 200 would turn a
+    readiness probe into a health check and reject endpoints that need auth.
+    """
+    try:
+        requests.get(_endpoint_probe_url(base_url), timeout=timeout_seconds)
+        return True
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+        return False
+    except requests.exceptions.RequestException:
+        # We cannot probe this URL at all (bad scheme, redirect loop). That is not a reason to
+        # hold up startup, and the request path will report it if it matters.
+        return True
+
+
+def _wait_for_model_endpoints(
+    urls: List[str],
+    timeout_seconds: float,
+    poll_interval_seconds: float = _ENDPOINT_POLL_INTERVAL_SEC,
+    monotonic=time,
+    sleep_fn=sleep,
+) -> List[str]:
+    """Wait for every URL to accept a connection. Returns the ones that never did.
+
+    Bounded waiting rather than fail-fast: NeMo-RL starts Gym servers before the policy endpoint
+    serves, and vLLM can spend minutes loading weights, so someone who starts early should not have
+    to start over.
+    """
+    if timeout_seconds <= 0 or not urls:
+        return []
+
+    waiting = [url for url in urls if not _is_endpoint_listening(url)]
+    if not waiting:
+        return []
+
+    started_at = monotonic()
+    print(
+        f"Waiting for {len(waiting)} model endpoint(s) to accept connections: {', '.join(waiting)}\n"
+        f"If an inference server is still loading weights this is expected. Waiting up to {timeout_seconds:.0f}s..."
+    )
+
+    poll_count = 0
+    while True:
+        elapsed = monotonic() - started_at
+        if elapsed >= timeout_seconds:
+            return waiting
+
+        sleep_fn(poll_interval_seconds)
+        waiting = [url for url in waiting if not _is_endpoint_listening(url)]
+        if not waiting:
+            print(f"All model endpoints are accepting connections after {monotonic() - started_at:.0f}s.")
+            return []
+
+        poll_count += 1
+        if poll_count % 10 == 0:
+            print(f"  still waiting for {', '.join(waiting)}, {monotonic() - started_at:.0f}s elapsed")
 
 
 def _resolve_server_dir(rel_path: Path) -> Path:
@@ -265,6 +377,7 @@ class RunHelper:  # pragma: no cover
             self.wait_for_dry_run_spinup()
         else:
             self.wait_for_spinup()
+            self.wait_for_model_endpoints(global_config_dict)
 
     def display_server_instance_info(self) -> None:
         if not self._server_instance_display_configs:
@@ -411,6 +524,22 @@ rpc_client.h:203: Failed to connect to GCS within 60 seconds. GCS may have been 
             pass
         finally:
             self.shutdown()
+
+    def wait_for_model_endpoints(self, global_config_dict: DictConfig) -> None:
+        timeout_seconds = float(global_config_dict.get(MODEL_ENDPOINT_READINESS_TIMEOUT_KEY_NAME, 0) or 0)
+        unreachable = _wait_for_model_endpoints(_collect_model_endpoint_urls(global_config_dict), timeout_seconds)
+        if not unreachable:
+            return
+
+        raise SystemExit(
+            f"""Gave up waiting for {len(unreachable)} model endpoint(s) after {timeout_seconds:.0f}s:
+{chr(10).join(f"  - {url}" for url in unreachable)}
+
+Nothing accepted a connection there. The server was never started, is still starting up, or the URL
+in your config does not match where it is listening.
+  - Check `policy_base_url` in `env.yaml`, and verify with: curl <base_url>/models
+  - Raise `{MODEL_ENDPOINT_READINESS_TIMEOUT_KEY_NAME}` to wait longer, or set it to 0 to skip this check."""
+        )
 
     def check_http_server_statuses(self, successful_servers: List[str]) -> List[Tuple[str, ServerStatus]]:
         statuses = []
