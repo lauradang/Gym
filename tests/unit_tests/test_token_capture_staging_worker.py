@@ -639,44 +639,38 @@ def test_megatron_adapter_reads_mapping_payloads_and_casts_scalars() -> None:
     assert adapter.extract_extras(payload) is None
 
 
-_MEDIA_GEOMETRY = {"modality": "image", "imgs_sizes": [[4, 4]], "num_frames": None, "num_tiles": None}
+def test_megatron_adapter_stages_compact_delta_without_media_summary() -> None:
+    payload = _minf_payload(
+        prompt_token_ids=[80, 99, 99, 99, 81],
+        generated_token_ids=[12, 2],
+        generated_log_probs=[-0.1, -0.2],
+        compact_prompt_token_ids=[80, 99, 81],
+        compact_prev_len=0,
+    )
+    assert MegatronCaptureAdapter().extract_extras(payload) == {"compact_token_ids_delta": [80, 99, 81, 12, 2]}
 
 
-@pytest.mark.parametrize(
-    ("overrides", "expected"),
-    [
-        # Text payload: no extras.
-        ({}, None),
-        # Root VLM call: the whole compact prompt plus the generation is new.
-        (
-            {"compact_prompt_token_ids": [10, 99, 11], "media": SimpleNamespace(**_MEDIA_GEOMETRY)},
-            {"compact_token_ids_delta": [10, 99, 11, 12, 13], "media": _MEDIA_GEOMETRY},
-        ),
-        # Child call: the worker spliced a 3-token compact parent chain; only the suffix is new.
-        (
-            {"compact_prompt_token_ids": [10, 99, 11, 30], "compact_prev_len": 3, "media": _MEDIA_GEOMETRY},
-            {"compact_token_ids_delta": [30, 12, 13], "media": _MEDIA_GEOMETRY},
-        ),
-        # Pre-expanded engine prompt: geometry alone.
-        ({"media": _MEDIA_GEOMETRY}, {"media": _MEDIA_GEOMETRY}),
-    ],
-    ids=["text", "root", "child", "preexpanded"],
-)
-def test_megatron_adapter_stages_multimodal_extras(overrides: dict[str, Any], expected: Any) -> None:
-    assert MegatronCaptureAdapter().extract_extras(_minf_payload(**overrides)) == expected
+def test_megatron_adapter_stages_child_compact_suffix() -> None:
+    # The worker spliced a 3-token compact parent chain; only the suffix plus the generation is new.
+    payload = _minf_payload(compact_prompt_token_ids=[10, 99, 11, 30], compact_prev_len=3)
+    assert MegatronCaptureAdapter().extract_extras(payload) == {"compact_token_ids_delta": [30, 12, 13]}
+
+
+def test_megatron_adapter_stages_no_extras_for_text_calls() -> None:
+    payload = _minf_payload(
+        prompt_token_ids=[80, 81],
+        generated_token_ids=[12, 2],
+        generated_log_probs=[-0.1, -0.2],
+        compact_prompt_token_ids=None,
+    )
+    assert MegatronCaptureAdapter().extract_extras(payload) is None
 
 
 @pytest.mark.parametrize(
     ("overrides", "error"),
     [
-        (
-            {"compact_prompt_token_ids": [10, 99], "compact_prev_len": 9, "media": _MEDIA_GEOMETRY},
-            "outside the compact prompt length",
-        ),
-        (
-            {"compact_prompt_token_ids": [10, 99], "compact_prev_len": "1", "media": _MEDIA_GEOMETRY},
-            "compact_prev_len must be an int",
-        ),
+        ({"compact_prompt_token_ids": [10, 99], "compact_prev_len": 9}, "outside the compact prompt length"),
+        ({"compact_prompt_token_ids": [10, 99], "compact_prev_len": "1"}, "compact_prev_len must be an int"),
     ],
 )
 def test_megatron_adapter_rejects_inconsistent_compact_prefix(overrides: dict[str, Any], error: str) -> None:
