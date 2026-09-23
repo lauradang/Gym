@@ -3,6 +3,7 @@
 
 """External capture strategy lifecycle tests."""
 
+import copy
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -164,6 +165,8 @@ def test_megatron_handler_admits_multimodal_requests(content_part: dict[str, Any
     request_payload = {
         "messages": [{"role": "user", "content": [{"type": "text", "text": "describe"}, content_part]}],
     }
+    # prepare_request mutates and returns the same dict; snapshot the messages first.
+    expected_messages = copy.deepcopy(request_payload["messages"])
     store = InMemoryLineageStore()
     context = _root_context(store)
     token = set_token_sink(context)
@@ -172,7 +175,7 @@ def test_megatron_handler_admits_multimodal_requests(content_part: dict[str, Any
     finally:
         reset_token_sink(token)
 
-    assert payload["messages"] == request_payload["messages"]
+    assert payload["messages"] == expected_messages
     assert payload["offload_params"]["ng_capture"] == context.capture_admission.model_dump(mode="json")
     assert payload["logprobs"] is True
     assert payload["top_logprobs"] == 0

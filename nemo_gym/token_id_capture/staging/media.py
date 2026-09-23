@@ -50,9 +50,9 @@ def build_compact_token_ids_delta(
         raise ValueError(
             f"compact_prev_len {compact_prev_len} is outside the compact prompt length {len(compact_prompt_token_ids)}"
         )
-    return [int(token_id) for token_id in compact_prompt_token_ids[compact_prev_len:]] + [
-        int(token_id) for token_id in generated_token_ids
-    ]
+    if any(type(token_id) is not int for token_id in (*compact_prompt_token_ids, *generated_token_ids)):
+        raise ValueError("compact_prompt_token_ids and generated_token_ids must contain only integer token ids")
+    return list(compact_prompt_token_ids[compact_prev_len:]) + list(generated_token_ids)
 
 
 __all__ = ["COMPACT_TOKEN_IDS_DELTA_FIELD", "build_compact_token_ids_delta"]
