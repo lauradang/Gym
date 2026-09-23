@@ -29,7 +29,7 @@ _MEDIA_KEYS = ("modality", "imgs_sizes", "num_frames", "num_tiles")
 
 
 def _field(payload: Any, name: str) -> Any:
-    """Read one field from an MInf payload object or an equivalent mapping."""
+    """Read one field from a Megatron Inference payload object or an equivalent mapping."""
     if isinstance(payload, Mapping):
         return payload.get(name)
     return getattr(payload, name, None)
@@ -44,10 +44,31 @@ def _sequence(payload: Any, name: str) -> Sequence[Any]:
     return value
 
 
-class MegatronCaptureAdapter:
-    """Translate MInf request/response material at the framework boundary.
+def _token_ids(payload: Any, name: str) -> list[int]:
+    """Read a token-id field, rejecting anything but plain integers.
 
-    MInf offloads exact prompt ids, generated ids, and selected-token log
+    Megatron Inference hands host-side ``list[int]`` values. A float, string, or
+    bool element means the payload is malformed; ``int()`` would silently
+    truncate or coerce it into a plausible-looking id.
+    """
+    values = _sequence(payload, name)
+    if any(type(value) is not int for value in values):
+        raise ValueError(f"Megatron offloaded payload field {name} must contain only integer token ids")
+    return list(values)
+
+
+def _log_probs(payload: Any, name: str) -> list[float]:
+    """Read a log-probability field, rejecting non-numeric elements."""
+    values = _sequence(payload, name)
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in values):
+        raise ValueError(f"Megatron offloaded payload field {name} must contain only numeric log probabilities")
+    return [float(value) for value in values]
+
+
+class MegatronCaptureAdapter:
+    """Translate Megatron inference request/response material at the framework boundary.
+
+    Megatron inference offloads exact prompt ids, generated ids, and selected-token log
     probabilities as attributes on a payload object rather than as a chat
     completion dict. The adapter reads either shape so extraction failures
     flow through ``RolloutTokenCapture.complete_call_from_response`` and
@@ -60,11 +81,11 @@ class MegatronCaptureAdapter:
         return request_payload
 
     def extract_prompt_ids(self, response_payload: Any) -> list[int]:
-        return [int(token_id) for token_id in _sequence(response_payload, PROMPT_IDS_FIELD)]
+        return _token_ids(response_payload, PROMPT_IDS_FIELD)
 
     def extract_generation(self, response_payload: Any) -> tuple[list[int], list[float]]:
-        token_ids = [int(token_id) for token_id in _sequence(response_payload, GENERATED_IDS_FIELD)]
-        log_probs = [float(value) for value in _sequence(response_payload, GENERATED_LOGPROBS_FIELD)]
+        token_ids = _token_ids(response_payload, GENERATED_IDS_FIELD)
+        log_probs = _log_probs(response_payload, GENERATED_LOGPROBS_FIELD)
         if len(token_ids) != len(log_probs):
             raise ValueError(
                 f"Megatron generated token and log-probability lengths differ: {len(token_ids)} != {len(log_probs)}"

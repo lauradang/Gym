@@ -290,7 +290,7 @@ class VLLMWorkerCaptureHandler(_BaseExternalCaptureHandler):
 
 
 class MegatronWorkerCaptureHandler(_BaseExternalCaptureHandler):
-    """Commit lineage after an MInf worker durably stages a canonical delta."""
+    """Commit lineage after a Megatron Inference worker durably stages a canonical delta."""
 
     _BACKEND_LABEL = "Megatron"
 

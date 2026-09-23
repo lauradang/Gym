@@ -526,6 +526,9 @@ async def _request_with_retries(
             if _GLOBAL_AIOHTTP_CLIENT_REQUEST_DEBUG:
                 print_exc()
 
+            if _max_connection_retries is not None and num_tries >= _max_connection_retries:
+                raise
+
             # Don't increment internal since we know we are ok. If we are not, the head server will shut everything down anyways.
             if not _internal:
                 print(
@@ -918,6 +921,7 @@ _TELEMETRY_SERVER_TYPE_BY_BASE = {
     "SimpleResourcesServer": "resources_servers",
     "SimpleResponsesAPIAgent": "responses_api_agents",
     "SimpleResponsesAPIModel": "responses_api_models",
+    "BaseEnvironmentServer": "environment_servers",
 }
 
 
