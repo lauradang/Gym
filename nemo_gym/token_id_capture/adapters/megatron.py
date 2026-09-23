@@ -109,8 +109,8 @@ class MegatronCaptureAdapter:
             raise ValueError("Megatron offloaded payload compact_prev_len must be an int")
         return {
             COMPACT_TOKEN_IDS_DELTA_FIELD: build_compact_token_ids_delta(
-                _sequence(response_payload, COMPACT_PROMPT_IDS_FIELD),
-                _sequence(response_payload, GENERATED_IDS_FIELD),
+                _token_ids(response_payload, COMPACT_PROMPT_IDS_FIELD),
+                _token_ids(response_payload, GENERATED_IDS_FIELD),
                 compact_prev_len=compact_prev_len,
             )
         }

@@ -671,6 +671,8 @@ def test_megatron_adapter_stages_no_extras_for_text_calls() -> None:
     [
         ({"compact_prompt_token_ids": [10, 99], "compact_prev_len": 9}, "outside the compact prompt length"),
         ({"compact_prompt_token_ids": [10, 99], "compact_prev_len": "1"}, "compact_prev_len must be an int"),
+        ({"compact_prompt_token_ids": [80, 1.5, 81]}, "compact_prompt_token_ids must contain only integer token ids"),
+        ({"compact_prompt_token_ids": [80, True, 81]}, "compact_prompt_token_ids must contain only integer token ids"),
     ],
 )
 def test_megatron_adapter_rejects_inconsistent_compact_prefix(overrides: dict[str, Any], error: str) -> None:
